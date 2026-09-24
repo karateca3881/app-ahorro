@@ -5,32 +5,28 @@ import sqlite3
 import os
 
 # -----------------------------------------------------------------------------
-# 1. CONFIGURACIÓN GENERAL, TEMA BLANCO Y BOTONES VERDES
+# 1. CONFIGURACIÓN DE LA PÁGINA (TEMA BLANCO Y BOTONES VERDES)
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="T L T Distribuciones — Finanzas y Control de Gastos", 
+    page_title="T L T Distribuciones — Finanzas Móviles", 
     layout="wide", 
     page_icon="📱"
 )
 
-# Estilos CSS: Fondo Blanco, Tarjetas Blancas y Botones Verdes
 st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
         
-        /* Fondo General Blanco */
         .stApp {
             background-color: #FFFFFF !important;
             color: #1E293B !important;
             font-family: 'Poppins', sans-serif !important;
         }
         
-        /* Encabezados y Textos */
         h1, h2, h3, h4, h5, h6, label, p, span {
             color: #0F172A !important;
         }
 
-        /* Botones Verdes (Primarios y Secundarios) */
         div.stButton > button {
             background-color: #10B981 !important;
             color: #FFFFFF !important;
@@ -38,7 +34,6 @@ st.markdown("""
             border: none !important;
             font-weight: 600 !important;
             padding: 10px 20px !important;
-            transition: all 0.3s ease !important;
         }
         
         div.stButton > button:hover {
@@ -46,23 +41,13 @@ st.markdown("""
             box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3) !important;
         }
 
-        /* Estilo de Tarjetas Desplegables (Expanders) */
-        .st-emotion-cache-1eb5vkp, .st-emotion-cache-p222h1, div[data-testid="stExpander"] {
+        .st-emotion-cache-1eb5vkp, div[data-testid="stExpander"] {
             background-color: #F8FAFC !important;
             border: 1px solid #E2E8F0 !important;
             border-radius: 12px !important;
             margin-bottom: 12px !important;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
         }
 
-        /* Cuadros de entrada de texto e información */
-        div[data-baseweb="input"] {
-            background-color: #FFFFFF !important;
-            border-radius: 8px !important;
-            border: 1px solid #CBD5E1 !important;
-        }
-
-        /* Métrica y Cajas Destacadas */
         div[data-testid="stMetricValue"] {
             color: #059669 !important;
             font-weight: 700 !important;
@@ -76,55 +61,81 @@ ARCHIVO_GASTOS_FIJOS = "gastos_fijos.csv"
 ARCHIVO_GASTOS_VARIABLES = "gastos_fijos_variables.csv"
 ARCHIVO_FONDO_AHORRO = "fondo_ahorro.csv"
 
-MARGEN_MES_REAL = 2445.48
-
 # -----------------------------------------------------------------------------
-# 2. CONSULTA AUTOMÁTICA DE BASE DE DATOS (tlt.sqlite3)
+# 2. CONSULTA CORREGIDA A TLT.SQLITE3 (HOY, SEMANA Y MES)
 # -----------------------------------------------------------------------------
-def obtener_ventas_tlt(fecha_consulta):
+def obtener_ventas_tlt_corregido(fecha_consulta):
+    """
+    Consulta tlt.sqlite3 usando comodines LIKE para que coincida 
+    con la fecha sin importar la hora guardada en la proforma.
+    """
     db_path = "tlt.sqlite3"
     fecha_str = fecha_consulta.strftime("%Y-%m-%d")
-    hace_7_dias_str = (fecha_consulta - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
     mes_str = fecha_consulta.strftime("%Y-%m")
+    hace_7_dias = fecha_consulta - datetime.timedelta(days=6)
     
-    v_dia, v_semana, v_mes = 0.0, 0.0, MARGEN_MES_REAL
+    ganancia_dia = 0.0
+    ganancia_semana = 0.0
+    ganancia_mes = 0.0
     conectado = False
 
     if os.path.exists(db_path):
         try:
             conn = sqlite3.connect(db_path)
-            # Venta del Día
-            q_dia = f"SELECT SUM(total_venta - total_costo) AS m FROM proformas_proforma WHERE strftime('%Y-%m-%d', fecha) = '{fecha_str}' AND estado IN ('confirmada', 'entregada')"
-            df_d = pd.read_sql_query(q_dia, conn)
-            if not df_d.empty and df_d["m"].iloc[0] is not None: v_dia = float(df_d["m"].iloc[0])
+            
+            # 1. Ganancia / Margen del DÍA (Búsqueda por coincidencia de fecha)
+            query_dia = f"""
+                SELECT SUM(total_venta - total_costo) AS margen 
+                FROM proformas_proforma 
+                WHERE (date(fecha) = '{fecha_str}' OR fecha LIKE '{fecha_str}%')
+                  AND estado IN ('confirmada', 'entregada')
+            """
+            df_d = pd.read_sql_query(query_dia, conn)
+            if not df_d.empty and df_d["margen"].iloc[0] is not None:
+                ganancia_dia = float(df_d["margen"].iloc[0])
 
-            # Venta de la Semana
-            q_sem = f"SELECT SUM(total_venta - total_costo) AS m FROM proformas_proforma WHERE date(fecha) BETWEEN '{hace_7_dias_str}' AND '{fecha_str}' AND estado IN ('confirmada', 'entregada')"
-            df_s = pd.read_sql_query(q_sem, conn)
-            if not df_s.empty and df_s["m"].iloc[0] is not None: v_semana = float(df_s["m"].iloc[0])
+            # 2. Ganancia / Margen de la SEMANA (Últimos 7 días)
+            query_sem = f"""
+                SELECT SUM(total_venta - total_costo) AS margen 
+                FROM proformas_proforma 
+                WHERE date(fecha) >= '{hace_7_dias.strftime("%Y-%m-%d")}'
+                  AND date(fecha) <= '{fecha_str}'
+                  AND estado IN ('confirmada', 'entregada')
+            """
+            df_s = pd.read_sql_query(query_sem, conn)
+            if not df_s.empty and df_s["margen"].iloc[0] is not None:
+                ganancia_semana = float(df_s["margen"].iloc[0])
 
-            # Venta del Mes
-            q_mes = f"SELECT SUM(total_venta - total_costo) AS m FROM proformas_proforma WHERE strftime('%Y-%m', fecha) = '{mes_str}' AND estado IN ('confirmada', 'entregada')"
-            df_m = pd.read_sql_query(q_mes, conn)
-            if not df_m.empty and df_m["m"].iloc[0] is not None: v_mes = float(df_m["m"].iloc[0])
+            # 3. Ganancia / Margen del MES ACUMULADO
+            query_mes = f"""
+                SELECT SUM(total_venta - total_costo) AS margen 
+                FROM proformas_proforma 
+                WHERE (strftime('%Y-%m', fecha) = '{mes_str}' OR fecha LIKE '{mes_str}%')
+                  AND estado IN ('confirmada', 'entregada')
+            """
+            df_m = pd.read_sql_query(query_mes, conn)
+            if not df_m.empty and df_m["margen"].iloc[0] is not None:
+                ganancia_mes = float(df_m["margen"].iloc[0])
 
             conn.close()
             conectado = True
         except Exception:
             pass
 
-    return v_dia, v_semana, v_mes, conectado
+    return ganancia_dia, ganancia_semana, ganancia_mes, conectado
 
 # -----------------------------------------------------------------------------
-# 3. CARGA DE ARCHIVOS CSV
+# 3. CARGA Y MANEJO DE CSV LOCALES
 # -----------------------------------------------------------------------------
 def cargar_csv(filepath, columnas):
     if os.path.exists(filepath):
         try:
             df = pd.read_csv(filepath)
-            if "Fecha" in df.columns: df["Fecha"] = pd.to_datetime(df["Fecha"]).dt.date
+            if "Fecha" in df.columns:
+                df["Fecha"] = pd.to_datetime(df["Fecha"]).dt.date
             return df
-        except Exception: pass
+        except Exception:
+            pass
     return pd.DataFrame(columns=columnas)
 
 def guardar_csv(df, filepath):
@@ -135,6 +146,7 @@ df_fijos = cargar_csv(ARCHIVO_GASTOS_FIJOS, ["Concepto", "Monto S/", "Pagado"])
 df_fijos_var = cargar_csv(ARCHIVO_GASTOS_VARIABLES, ["Fecha_Mes", "Servicio", "Monto S/"])
 df_ahorro = cargar_csv(ARCHIVO_FONDO_AHORRO, ["Fecha", "Monto Ahorrado S/", "Comentario"])
 
+# Gastos Fijos por defecto
 if df_fijos.empty:
     df_fijos = pd.DataFrame([
         {"Concepto": "Alquiler", "Monto S/": 700.0, "Pagado": True},
@@ -142,29 +154,42 @@ if df_fijos.empty:
     ])
     guardar_csv(df_fijos, ARCHIVO_GASTOS_FIJOS)
 
+# -----------------------------------------------------------------------------
+# 4. CÁLCULOS GENERALES
+# -----------------------------------------------------------------------------
 hoy = datetime.date.today()
 mes_actual_str = hoy.strftime("%Y-%m")
 hace_7_dias = hoy - datetime.timedelta(days=6)
 
-v_dia_auto, v_semana_auto, v_mes_auto, db_conectada = obtener_ventas_tlt(hoy)
+# Obtener los márgenes reales desde la base de datos SQL
+v_dia_real, v_sem_real, v_mes_real, db_conectada = obtener_ventas_tlt_corregido(hoy)
 
 gastos_hoy_total = df_diarios[df_diarios["Fecha"] == hoy]["Monto S/"].sum() if not df_diarios.empty else 0.0
 total_fijos_mes = df_fijos["Monto S/"].sum() if not df_fijos.empty else 0.0
-total_fijos_var_mes = df_fijos_var[df_fijos_var["Fecha_Mes"].astype(str).str.startswith(mes_actual_str)]["Monto S/"].sum() if not df_fijos_var.empty else 0.0
+
+if not df_fijos_var.empty:
+    df_fijos_var["Mes_Año"] = pd.to_datetime(df_fijos_var["Fecha_Mes"]).dt.strftime("%Y-%m")
+    total_fijos_var_mes = df_fijos_var[df_fijos_var["Mes_Año"] == mes_actual_str]["Monto S/"].sum()
+else:
+    total_fijos_var_mes = 0.0
+
 total_diarios_mes = df_diarios[df_diarios["Fecha"].astype(str).str.startswith(mes_actual_str)]["Monto S/"].sum() if not df_diarios.empty else 0.0
 
 total_gastos_mes = total_fijos_mes + total_fijos_var_mes + total_diarios_mes
-ganancia_neta_mes = v_mes_auto - total_gastos_mes
+ganancia_neta_mes = v_mes_real - total_gastos_mes
 total_ahorrado_acumulado = df_ahorro["Monto Ahorrado S/"].sum() if not df_ahorro.empty else 0.0
 
 # -----------------------------------------------------------------------------
-# 4. ENCABEZADO MÓVIL
+# 5. ENCABEZADO Y BALANCE EN TIEMPO REAL
 # -----------------------------------------------------------------------------
-st.title("📱 T L T Distribuciones — Finanzas")
+st.title("📱 T L T Distribuciones — Finanzas y Ganancias")
 
 col_head, col_btn = st.columns([3, 1])
 with col_head:
-    st.success(f"✅ **Conectado a Base de Datos (tlt.sqlite3)** — Margen del Mes Real: **S/ {v_mes_auto:,.2f}**")
+    if db_conectada:
+        st.success(f"✅ **Conectado a Base de Datos (tlt.sqlite3)** — Margen del Mes: **S/ {v_mes_real:,.2f}**")
+    else:
+        st.warning("⚠️ **Base de datos no encontrada en esta ruta.**")
 with col_btn:
     if st.button("🔄 Sincronizar", use_container_width=True):
         st.rerun()
@@ -172,38 +197,39 @@ with col_btn:
 st.write("---")
 
 # -----------------------------------------------------------------------------
-# 5. BLOQUES PLEGABLES (PLANTILLA 3 MÓVIL EN BLANCO Y VERDE)
+# 6. ESTRUCTURA PLEGABLE (MÓVIL)
 # -----------------------------------------------------------------------------
 
-# BLOQUE 1: RESUMEN DE GANANCIAS EN LOS 3 NIVELES
-with st.expander("📊 **VER BALANCE: DIARIO, SEMANAL Y MENSUAL**", expanded=True):
+# BLOQUE 1: BALANCE Y MARGEN (DIARIO, SEMANAL Y MENSUAL)
+with st.expander("📊 **VER MARGEN / GANANCIAS: DIARIO, SEMANAL Y MENSUAL**", expanded=True):
     c_m1, c_m2, c_m3 = st.columns(3)
+    
     with c_m1:
-        st.markdown("#### 📅 1. HOY")
-        st.metric("Ventas Hoy", f"S/ {v_dia_auto:,.2f}")
+        st.markdown("#### 📅 1. HOY (Ganancia del Día)")
+        st.metric("Ganancia/Margen Hoy", f"S/ {v_dia_real:,.2f}")
         st.metric("Gastos Hoy", f"S/ {gastos_hoy_total:,.2f}")
-        st.metric("Neto Limpio Hoy", f"S/ {(v_dia_auto - gastos_hoy_total):,.2f}")
+        neto_hoy = v_dia_real - gastos_hoy_total
+        st.metric("Ganancia Neta Hoy", f"S/ {neto_hoy:,.2f}", delta=f"{'Superávit' if neto_hoy >= 0 else 'Déficit'}")
     
     with c_m2:
-        st.markdown("#### 🗓️ 2. ÚLTIMOS 7 DÍAS")
+        st.markdown("#### 🗓️ 2. ÚLTIMOS 7 DÍAS (Semanal)")
         gastos_semana_total = df_diarios[(df_diarios["Fecha"] >= hace_7_dias) & (df_diarios["Fecha"] <= hoy)]["Monto S/"].sum() if not df_diarios.empty else 0.0
-        st.metric("Ventas Semanales", f"S/ {v_semana_auto:,.2f}")
+        st.metric("Ganancia/Margen Semanal", f"S/ {v_sem_real:,.2f}")
         st.metric("Gastos Semanales", f"S/ {gastos_semana_total:,.2f}")
-        st.metric("Neto Semanal", f"S/ {(v_semana_auto - gastos_semana_total):,.2f}")
+        neto_semana = v_sem_real - gastos_semana_total
+        st.metric("Ganancia Neta Semanal", f"S/ {neto_semana:,.2f}", delta=f"{'Superávit' if neto_semana >= 0 else 'Déficit'}")
         
     with c_m3:
         st.markdown("#### 📅 3. ACUMULADO DEL MES")
-        st.metric("Margen Real Mes", f"S/ {v_mes_auto:,.2f}")
-        st.metric("Gastos Mes", f"S/ {total_gastos_mes:,.2f}")
-        st.metric("Neto Disponible", f"S/ {ganancia_neta_mes:,.2f}")
+        st.metric("Ganancia/Margen Mes", f"S/ {v_mes_real:,.2f}")
+        st.metric("Gastos Totales Mes", f"S/ {total_gastos_mes:,.2f}")
+        st.metric("Ganancia Neta Disponible", f"S/ {ganancia_neta_mes:,.2f}", delta=f"{'Superávit' if ganancia_neta_mes >= 0 else 'Déficit'}")
 
-
-# BLOQUE 2: REGISTRO DE GASTOS DIARIOS POR FILAS INDEPENDIENTES
+# BLOQUE 2: REGISTRO DE GASTOS DIARIOS
 with st.expander("🚌 **REGISTRAR GASTOS DIARIOS DE HOY**", expanded=False):
-    fecha_gasto_diario = st.date_input("Fecha del Gasto", value=datetime.date.today(), key="fecha_m_diaria")
+    fecha_gasto_diario = st.date_input("Fecha del Gasto", value=datetime.date.today(), key="f_diaria_input")
     st.write("---")
 
-    # Pasaje Diario
     col_p1, col_p2, col_p3 = st.columns([2, 3, 2])
     with col_p1: st.markdown("##### 🚌 Pasaje Diario")
     with col_p2: m_p_d = st.number_input("Monto (S/)", min_value=0.0, step=0.5, format="%.2f", key="m_pd_m")
@@ -218,7 +244,6 @@ with st.expander("🚌 **REGISTRAR GASTOS DIARIOS DE HOY**", expanded=False):
 
     st.write("---")
 
-    # Pasaje Empresa
     col_pe1, col_pe2, col_pe3 = st.columns([2, 3, 2])
     with col_pe1: st.markdown("##### 🚚 Pasaje Empresa")
     with col_pe2: m_p_e = st.number_input("Monto (S/)", min_value=0.0, step=0.5, format="%.2f", key="m_pe_m")
@@ -233,7 +258,6 @@ with st.expander("🚌 **REGISTRAR GASTOS DIARIOS DE HOY**", expanded=False):
 
     st.write("---")
 
-    # Gastos Empresa
     col_ge1, col_ge2, col_ge3 = st.columns([2, 3, 2])
     with col_ge1: st.markdown("##### 📦 Gastos Empresa")
     with col_ge2: m_g_e = st.number_input("Monto (S/)", min_value=0.0, step=0.5, format="%.2f", key="m_ge_m")
@@ -248,7 +272,6 @@ with st.expander("🚌 **REGISTRAR GASTOS DIARIOS DE HOY**", expanded=False):
 
     st.write("---")
 
-    # Comida
     col_co1, col_co2, col_co3 = st.columns([2, 3, 2])
     with col_co1: st.markdown("##### 🍲 Comida")
     with col_co2: m_co = st.number_input("Monto (S/)", min_value=0.0, step=0.5, format="%.2f", key="m_co_m")
@@ -261,12 +284,10 @@ with st.expander("🚌 **REGISTRAR GASTOS DIARIOS DE HOY**", expanded=False):
                 st.success(f"Comida guardada: S/ {m_co:.2f}")
                 st.rerun()
 
-
 # BLOQUE 3: REGISTRO DE RECIBOS (LUZ / AGUA / GAS)
 with st.expander("💡 **REGISTRAR RECIBOS (LUZ / AGUA / GAS)**", expanded=False):
     fecha_recibo = st.date_input("Fecha de emisión del recibo", value=datetime.date.today(), key="f_recibos_m")
     
-    # Luz
     r_l1, r_l2, r_l3 = st.columns([2, 3, 2])
     with r_l1: st.markdown("##### 💡 Recibo de Luz")
     with r_l2: m_luz = st.number_input("Monto (S/)", min_value=0.0, step=1.0, format="%.2f", key="m_luz_m")
@@ -281,7 +302,6 @@ with st.expander("💡 **REGISTRAR RECIBOS (LUZ / AGUA / GAS)**", expanded=False
 
     st.write("---")
 
-    # Agua
     r_a1, r_a2, r_a3 = st.columns([2, 3, 2])
     with r_a1: st.markdown("##### 💧 Recibo de Agua")
     with r_a2: m_agua = st.number_input("Monto (S/)", min_value=0.0, step=1.0, format="%.2f", key="m_agua_m")
@@ -296,7 +316,6 @@ with st.expander("💡 **REGISTRAR RECIBOS (LUZ / AGUA / GAS)**", expanded=False
 
     st.write("---")
 
-    # Gas
     r_g1, r_g2, r_g3 = st.columns([2, 3, 2])
     with r_g1: st.markdown("##### 🔥 Recibo de Gas")
     with r_g2: m_gas = st.number_input("Monto (S/)", min_value=0.0, step=1.0, format="%.2f", key="m_gas_m")
@@ -309,12 +328,10 @@ with st.expander("💡 **REGISTRAR RECIBOS (LUZ / AGUA / GAS)**", expanded=False
                 st.success(f"Recibo de Gas guardado: S/ {m_gas:.2f}")
                 st.rerun()
 
-
-# BLOQUE 4: GASTOS FIJOS (ALQUILER Y UNIVERSIDAD)
+# BLOQUE 4: GASTOS FIJOS
 with st.expander("📌 **VER GASTOS FIJOS MENSUALES**", expanded=False):
     st.dataframe(df_fijos, use_container_width=True, hide_index=True)
     st.metric("Total Gastos Fijos Mensuales", f"S/ {total_fijos_mes:,.2f}")
-
 
 # BLOQUE 5: FONDO DE AHORRO
 with st.expander("🏦 **MI FONDO DE AHORRO ACUMULADO**", expanded=False):
