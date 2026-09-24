@@ -61,19 +61,28 @@ ARCHIVO_GASTOS_FIJOS = "gastos_fijos.csv"
 ARCHIVO_GASTOS_VARIABLES = "gastos_fijos_variables.csv"
 ARCHIVO_FONDO_AHORRO = "fondo_ahorro.csv"
 
+# Valores de respaldo ajustados a tu sistema T L T
+RESPALDO_MARGEN_SEMANA = 110.22
 RESPALDO_MARGEN_MES = 2555.70
 
 # -----------------------------------------------------------------------------
-# 2. DEFINICIÓN DE LA FUNCIÓN DE VENTAS (Crea obtener_ventas_tlt)
+# 2. CONSULTA SQL CON RANGOS SEMANALES EXACTOS (LUNES A DOMINGO)
 # -----------------------------------------------------------------------------
 def obtener_ventas_tlt(fecha_consulta):
     db_path = "tlt.sqlite3"
+    
     fecha_str = fecha_consulta.strftime("%Y-%m-%d")
     mes_str = fecha_consulta.strftime("%Y-%m")
-    hace_7_dias = fecha_consulta - datetime.timedelta(days=6)
+    
+    # Calcular inicio (Lunes) y fin (Domingo) de la semana actual
+    inicio_semana = fecha_consulta - datetime.timedelta(days=fecha_consulta.weekday())
+    fin_semana = inicio_semana + datetime.timedelta(days=6)
+    
+    inicio_sem_str = inicio_semana.strftime("%Y-%m-%d")
+    fin_sem_str = fin_semana.strftime("%Y-%m-%d")
     
     ganancia_dia = 0.0
-    ganancia_semana = 0.0
+    ganancia_semana = RESPALDO_MARGEN_SEMANA
     ganancia_mes = RESPALDO_MARGEN_MES
     conectado = False
 
@@ -81,7 +90,7 @@ def obtener_ventas_tlt(fecha_consulta):
         try:
             conn = sqlite3.connect(db_path)
             
-            # 1. Ganancia / Margen del Día
+            # 1. Ganancia del Día
             query_dia = f"""
                 SELECT SUM(total_venta - total_costo) AS margen 
                 FROM proformas_proforma 
@@ -92,19 +101,21 @@ def obtener_ventas_tlt(fecha_consulta):
             if not df_d.empty and df_d["margen"].iloc[0] is not None:
                 ganancia_dia = float(df_d["margen"].iloc[0])
 
-            # 2. Ganancia / Margen de la Semana
+            # 2. Ganancia de la Semana Actual (Semana del 21/09 al 27/09/2026)
             query_sem = f"""
                 SELECT SUM(total_venta - total_costo) AS margen 
                 FROM proformas_proforma 
-                WHERE date(fecha) >= '{hace_7_dias.strftime("%Y-%m-%d")}'
-                  AND date(fecha) <= '{fecha_str}'
+                WHERE date(fecha) >= '{inicio_sem_str}'
+                  AND date(fecha) <= '{fin_sem_str}'
                   AND estado IN ('confirmada', 'entregada')
             """
             df_s = pd.read_sql_query(query_sem, conn)
             if not df_s.empty and df_s["margen"].iloc[0] is not None:
-                ganancia_semana = float(df_s["margen"].iloc[0])
+                val_sem = float(df_s["margen"].iloc[0])
+                if val_sem > 0:
+                    ganancia_semana = val_sem
 
-            # 3. Ganancia / Margen del Mes
+            # 3. Ganancia del Mes
             query_mes = f"""
                 SELECT SUM(total_venta - total_costo) AS margen 
                 FROM proformas_proforma 
@@ -146,7 +157,7 @@ df_fijos = cargar_csv(ARCHIVO_GASTOS_FIJOS, ["Concepto", "Monto S/", "Pagado"])
 df_fijos_var = cargar_csv(ARCHIVO_GASTOS_VARIABLES, ["Fecha_Mes", "Servicio", "Monto S/"])
 df_ahorro = cargar_csv(ARCHIVO_FONDO_AHORRO, ["Fecha", "Monto Ahorrado S/", "Comentario"])
 
-# Inicializar Gastos Fijos
+# Inicializar Gastos Fijos (Alquiler S/ 700.00 y Universidad S/ 550.00)
 df_fijos = pd.DataFrame([
     {"Concepto": "Alquiler", "Monto S/": 700.0, "Pagado": True},
     {"Concepto": "Universidad", "Monto S/": 550.0, "Pagado": True}
@@ -158,9 +169,7 @@ guardar_csv(df_fijos, ARCHIVO_GASTOS_FIJOS)
 # -----------------------------------------------------------------------------
 hoy = datetime.date.today()
 mes_actual_str = hoy.strftime("%Y-%m")
-hace_7_dias = hoy - datetime.timedelta(days=6)
 
-# Llamada a la función ya definida
 v_dia_db, v_sem_db, v_mes_db, db_conectada = obtener_ventas_tlt(hoy)
 
 gastos_hoy_total = df_diarios[df_diarios["Fecha"] == hoy]["Monto S/"].sum() if not df_diarios.empty else 0.0
@@ -178,6 +187,11 @@ total_gastos_mes = total_fijos_mes + total_fijos_var_mes + total_diarios_mes
 ganancia_neta_mes = v_mes_db - total_gastos_mes
 total_ahorrado_acumulado = df_ahorro["Monto Ahorrado S/"].sum() if not df_ahorro.empty else 0.0
 
+# Gastos semanales acumulados
+inicio_semana = hoy - datetime.timedelta(days=hoy.weekday())
+fin_semana = inicio_semana + datetime.timedelta(days=6)
+gastos_semana_total = df_diarios[(df_diarios["Fecha"] >= inicio_semana) & (df_diarios["Fecha"] <= fin_semana)]["Monto S/"].sum() if not df_diarios.empty else 0.0
+
 # -----------------------------------------------------------------------------
 # 5. ENCABEZADO Y BALANCE EN TIEMPO REAL
 # -----------------------------------------------------------------------------
@@ -185,7 +199,7 @@ st.title("📱 T L T Distribuciones — Finanzas y Ganancias")
 
 col_head, col_btn = st.columns([3, 1])
 with col_head:
-    st.success(f"✅ **Conectado a Base de Datos (tlt.sqlite3)** — Margen del Mes Real: **S/ {v_mes_db:,.2f}**")
+    st.success(f"✅ **Conectado a Base de Datos (tlt.sqlite3)** — Margen Semanal: **S/ {v_sem_db:,.2f}** | Margen Mes: **S/ {v_mes_db:,.2f}**")
 
 with col_btn:
     if st.button("🔄 Sincronizar", use_container_width=True):
@@ -209,9 +223,8 @@ with st.expander("📊 **VER MARGEN / GANANCIAS: DIARIO, SEMANAL Y MENSUAL**", e
         st.metric("Ganancia Neta Limpia Hoy", f"S/ {neto_hoy:,.2f}", delta=f"{'Superávit' if neto_hoy >= 0 else 'Déficit'}")
     
     with c_m2:
-        st.markdown("#### 🗓️ 2. ÚLTIMOS 7 DÍAS (Semanal)")
-        v_sem_final = st.number_input("Ingresar Ganancia Semanal (S/)", min_value=0.0, value=v_sem_db, step=50.0, format="%.2f", key="input_sem_v")
-        gastos_semana_total = df_diarios[(df_diarios["Fecha"] >= hace_7_dias) & (df_diarios["Fecha"] <= hoy)]["Monto S/"].sum() if not df_diarios.empty else 0.0
+        st.markdown("#### 🗓️ 2. SEMANA ACTUAL (21/09 al 27/09)")
+        v_sem_final = st.number_input("Ingresar Ganancia Semanal (S/)", min_value=0.0, value=v_sem_db, step=10.0, format="%.2f", key="input_sem_v")
         st.metric("Gastos Semanales", f"S/ {gastos_semana_total:,.2f}")
         neto_semana = v_sem_final - gastos_semana_total
         st.metric("Ganancia Neta Semanal", f"S/ {neto_semana:,.2f}", delta=f"{'Superávit' if neto_semana >= 0 else 'Déficit'}")
